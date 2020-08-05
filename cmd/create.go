@@ -69,20 +69,60 @@ func Create(cmd *cobra.Command, args []string) {
 		log.Fatalf("failed to create migration directory %s", err.Error())
 	}
 
-	_, err = copyBytesFromTemplateToDest(templates.GetUpTemplatePath(), filepath.Join(migrationDirname, UpFilename))
+	boolChan := make(chan bool, 1)
+	errChan := make(chan error, 1)
+	quitChan := make(chan struct{})
 
-	if err != nil {
-		log.Fatal(err)
+	type MFileInfo struct {
+		src  string
+		dest string
 	}
 
-	_, err = copyBytesFromTemplateToDest(templates.GetDownTemplatePath(), filepath.Join(migrationDirname, DownFilename))
-	// write up / down template. read byte from up / down templates
-	if err != nil {
-		log.Fatal(err)
+	mUp := &MFileInfo{
+		templates.GetUpTemplatePath(),
+		filepath.Join(migrationDirname, UpFilename),
 	}
 
-	log.Infof("")
-	//log.Printf("byte written", nb)
+	mDown := &MFileInfo{
+		templates.GetDownTemplatePath(),
+		filepath.Join(migrationDirname, DownFilename),
+	}
+
+	mFileList := [2]*MFileInfo{mUp, mDown}
+
+	for _, mInfo := range mFileList {
+		go func(mInfo *MFileInfo) {
+			select {
+			case <-quitChan:
+				return
+			default:
+				_, err = copyBytesFromTemplateToDest(
+					mInfo.src,
+					mInfo.dest,
+				)
+
+				if err != nil {
+					boolChan <- false
+					errChan <- err
+				}
+
+				boolChan <- true
+			}
+		}(mInfo)
+	}
+
+	for range mFileList {
+		if <-boolChan == false {
+			close(quitChan)
+
+			log.Fatal(<-errChan)
+		}
+	}
+
+	log.WithFields(log.Fields{
+		"up":   fmt.Sprintf("%s created", mUp.src),
+		"down": fmt.Sprintf("%s created", mDown.src),
+	}).Info("migration file created!")
 }
 
 var createCmd = &cobra.Command{
